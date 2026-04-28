@@ -26,6 +26,8 @@ const EnvSchema = z.object({
     },
     z.string().url().optional(),
   ),
+  /** OpenAI API key for /api/generate-plant-post (server only). */
+  OPENAI_API_KEY: z.string().optional(),
 });
 
 export const env = EnvSchema.parse(process.env);
