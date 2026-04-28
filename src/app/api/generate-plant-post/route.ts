@@ -5,6 +5,8 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 const MODEL = "gpt-5-mini";
+const SYSTEM_MESSAGE =
+  "Du bist ein Experte für Pflanzenporträts und schreibst hochwertige, sachliche Facebook-Posts für die Wildkräuter Fee. Klar, lokal, ohne Floskeln.";
 
 function buildUserPrompt(plantName: string): string {
   const t = `Erstelle ein kurzes Pflanzenporträt für Facebook über: {{PLANT_NAME}}
@@ -128,7 +130,7 @@ function splitVariants(text: string): string[] {
   if (!t) return [];
   if (!t.includes("---")) return [t];
   return t
-    .split(/\n\s*---\s*\n/g)
+    .split(/---/g)
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -179,66 +181,44 @@ export async function POST(req: Request) {
 
   const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
-  let response;
   try {
-    response = await openai.responses.create({
+    const completion = await openai.chat.completions.create({
       model: MODEL,
-      input: userPrompt,
-      max_output_tokens: 900,
-      text: { format: { type: "text" } },
+      messages: [
+        {
+          role: "system",
+          content: SYSTEM_MESSAGE,
+        },
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+      max_completion_tokens: 900,
     });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "OpenAI request failed";
-    return NextResponse.json({ error: msg }, { status: 502 });
-  }
 
-  let raw = "";
-  try {
-    raw =
-      response.output
-        ?.flatMap((o) => {
-          if (typeof o !== "object" || o === null) return [];
-          if (!("content" in o)) return [];
-          const content = (o as { content?: unknown }).content;
-          return Array.isArray(content) ? (content as unknown[]) : [];
-        })
-        ?.filter(
-          (c): c is { type?: string; text?: unknown } =>
-            typeof c === "object" &&
-            c !== null &&
-            (c as { type?: string }).type === "output_text",
-        )
-        ?.map((c) => (typeof c.text === "string" ? c.text : ""))
-        ?.join("\n")
-        ?.trim() ?? "";
-  } catch (e) {
-    console.log("[generate-plant-post] output parsing failed:", e);
-    try {
-      console.log(JSON.stringify(response, null, 2));
-    } catch {
-      console.log("[generate-plant-post] raw response:", response);
+    const modelText = completion.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!modelText) {
+      return NextResponse.json({ error: "Keine Antwort vom Modell" }, { status: 500 });
     }
-    return NextResponse.json({ error: "Failed to parse model response" }, { status: 500 });
-  }
 
-  const variants = splitVariants(raw);
-  if (variants.length === 0) {
-    try {
-      console.log(JSON.stringify(response, null, 2));
-    } catch {
-      console.log("[generate-plant-post] empty output; raw response:", response);
+    const variants = splitVariants(modelText);
+    const text = appendCtaIfNoWeinburg(variants[0] ?? "");
+    if (!text) {
+      return NextResponse.json({ error: "Keine Antwort vom Modell" }, { status: 500 });
     }
-    return NextResponse.json({ error: "Empty response from model" }, { status: 500 });
+
+    const isTooGeneric = detectTooGeneric(text);
+    const hashtags = buildHashtags(plant, hashtagVariant);
+
+    return NextResponse.json({
+      text,
+      hashtags,
+      isTooGeneric,
+      variants: variants.map(appendCtaIfNoWeinburg),
+    });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "OpenAI Fehler" }, { status: 500 });
   }
-
-  const text = appendCtaIfNoWeinburg(variants[0]);
-  const isTooGeneric = detectTooGeneric(text);
-  const hashtags = buildHashtags(plant, hashtagVariant);
-
-  return NextResponse.json({
-    text,
-    hashtags,
-    isTooGeneric,
-    variants: variants.map(appendCtaIfNoWeinburg),
-  });
 }
