@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+dev.db
 
 # debug
 npm-debug.log*
@@ -33,9 +34,14 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# one-time Meta App Secret for scripts/push-meta-secret-to-vercel.mjs
+meta-secret-temp.txt
+
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma

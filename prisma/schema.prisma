@@ -1,0 +1,45 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  displayName  String?
+  role         UserRole @default(EDITOR)
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum Provider {
+  FACEBOOK
+  INSTAGRAM
+  META
+}
+
+model SocialAccount {
+  id        String   @id @default(cuid())
+  provider  Provider
+  label     String?
+  pageId    String?
+  igUserId  String?
+  tokenEnc  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

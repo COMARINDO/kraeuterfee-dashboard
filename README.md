@@ -1,4 +1,27 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Kräuterfee — Dashboard (Next.js) für Social-Setup; optional Facebook-Login (OAuth) über die Meta-Plattform.
+
+## Umgebung & Meta (Facebook) OAuth
+
+1. Kopiere `.env.example` nach `.env` (lokal) bzw. trage in [Vercel](https://vercel.com) dieselben Variablen unter **Settings → Environment Variables** ein.
+2. **`META_APP_ID`**: Nummerische App-ID im [Meta App-Dashboard](https://developers.facebook.com/apps) — in der Adresszeile der App, z. B. `https://developers.facebook.com/apps/<nur-ziffern>/...`. Wenn im Link `…` oder ein Satz in der Suche erscheint, ist das oft kein vollständiger URL-Schnipsel; die ID ist ausschließlich die Ziffernfolge im Pfad.
+3. **`META_APP_SECRET`**: In der App unter **Einstellungen → Basis**; nur serverseitig / in Vercel, nicht versionieren.
+4. **`META_REDIRECT_URI`**: Muss exakt dem Eintrag in **Produkte → Facebook Login → Einstellungen → Gültige OAuth-Weiterleitungs-URIs** entsprechen (in Produktion z. B. eure Vercel-Domain inkl. `/api/meta/facebook/callback`).
+
+5. **App-Domains (Basis-Einstellungen)**: Den **Host eurer Live-URL** (z. B. `kraeuterfee-dashboard.vercel.app`, **ohne** `https://`) unter **App einstellen → Basis → App-Domains** eintragen. Fehlt das, erscheint oft: *URL kann nicht geladen werden / Domain nicht in der App*.
+
+Für **Live-Modus** und Checklisten nutzt die Konsole u. a. **Go live**; die OAuth-Redirect-URIs werden dort nicht zentral gepflegt — dafür immer **Facebook Login → Einstellungen**.
+
+### Facebook verbinden (eine Sache, die du lokal startest)
+
+**Du musst nur eins in Terminal ausführen (im Ordner `kraeuterfee-dashboard`):**
+
+```bash
+npm run setup:facebook
+```
+
+Der Assistent **öffnet die Meta-Seite**, sagt dir **genau welche Datei** du befüllst (einmal: App-Geheimnis von Meta, eine Zeile), trägt es in **Vercel** ein, **deployt**, und kann optional **Playwright** starten, damit die **OAuth-Weiterleitungs-URL** in Meta gesetzt wird. Detailliert: `scripts/facebook-setup-wizard.mjs`.
+
+(Alternativ manuell: `npm run vercel:push-meta-secret` nach `meta-secret-temp.txt` und in `kraeuterfee-fb-automation` → `npm run meta:oauth:default-app`.)
 
 ## Getting Started
 
