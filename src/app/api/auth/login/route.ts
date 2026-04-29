@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 const BodySchema = z.object({
-  email: z.string().email(),
+  username: z.string().min(1),
   password: z.string().min(1),
 });
 
@@ -16,21 +16,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Ungültige Eingabe." }, { status: 400 });
   }
 
-  const email = parsed.data.email.toLowerCase();
-  const ok =
-    email === env.APP_ADMIN_EMAIL.toLowerCase() &&
-    parsed.data.password === env.APP_ADMIN_PASSWORD;
+  const username = parsed.data.username.trim().toLowerCase();
+  const expected = (env.APP_ADMIN_USERNAME ?? env.APP_ADMIN_EMAIL).trim().toLowerCase();
+  const ok = username === expected && parsed.data.password === env.APP_ADMIN_PASSWORD;
 
   if (!ok) {
-    return NextResponse.json({ error: "E-Mail oder Passwort falsch." }, { status: 401 });
+    return NextResponse.json({ error: "Username oder Passwort falsch." }, { status: 401 });
   }
 
   const session = await getSession(cookies());
   session.user = {
     id: "admin",
-    email: env.APP_ADMIN_EMAIL.toLowerCase(),
+    email: expected,
     role: "ADMIN",
-    displayName: "Admin",
+    displayName: env.APP_ADMIN_USERNAME ?? "Admin",
   };
   await session.save();
 

@@ -1,704 +1,618 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const DEFAULT_HASHTAGS = "#Kraeuterfee #KraeutergartenWeinburg #Wildkraeuter #Kraeutergarten";
-const DRAFT_KEY = "kraeuterfee-manual-post-v1";
-const SAVED_PLANT_POSTS_KEY = "kraeuterfee-saved-plant-posts-v1";
-const MAX_POST_IMAGE_BYTES = 2 * 1024 * 1024;
+const FIXED_COPY_HASHTAGS = "#Weinburg #Kräuter #Naturgarten #Wildkräuter #Pielachtal";
 
-type SavedPlantPost = {
-  plant: string;
-  text: string;
-  createdAt: number;
-  hashtags?: string[];
-  /** data:image/…;base64,… */
-  image?: string;
+function toDatetimeLocalValue(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function imageSrcToFile(src: string | null): Promise<File | null> {
+  if (!src) return null;
+  if (src.startsWith("data:") || src.startsWith("blob:")) {
+    const res = await fetch(src);
+    const blob = await res.blob();
+    return new File([blob], "photo.jpg", { type: blob.type || "image/jpeg" });
+  }
+  return null;
+}
+
+async function imageSrcToBase64Parts(src: string | null): Promise<{ imageBase64: string; imageMime: string } | null> {
+  if (!src) return null;
+  if (src.startsWith("data:")) {
+    const mime = src.slice(5, src.indexOf(";")) || "image/jpeg";
+    const b64 = src.split(",", 2)[1] ?? "";
+    if (!b64) return null;
+    return { imageBase64: b64, imageMime: mime };
+  }
+  const file = await imageSrcToFile(src);
+  if (!file) return null;
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = r.result as string;
+      const comma = s.indexOf(",");
+      const mime = file.type || "image/jpeg";
+      const b64 = comma >= 0 ? s.slice(comma + 1) : "";
+      if (!b64) {
+        resolve(null);
+        return;
+      }
+      resolve({ imageBase64: b64, imageMime: mime });
+    };
+    r.onerror = () => reject(new Error("read"));
+    r.readAsDataURL(file);
+  });
+}
+
+type ScheduledRow = {
+  id: string;
+  message: string;
+  scheduledAt: string;
+  status: string;
+  pageName: string | null;
+  lastError: string | null;
+  createdAt: string;
 };
 
-type HashtagVariant = "local" | "general";
-
-function isSavedPlantPost(x: unknown): x is SavedPlantPost {
-  if (typeof x !== "object" || x === null) return false;
-  const o = x as Record<string, unknown>;
-  if (typeof o.plant !== "string" || typeof o.text !== "string" || typeof o.createdAt !== "number") {
-    return false;
-  }
-  if (o.hashtags !== undefined) {
-    if (!Array.isArray(o.hashtags) || !o.hashtags.every((h) => typeof h === "string")) return false;
-  }
-  if (o.image !== undefined && typeof o.image !== "string") return false;
-  return true;
-}
-
-function isTooGenericClient(text: string): boolean {
-  return /beliebt|gesund|vielseitig/i.test(text);
-}
-
-function hashtagsArrayToLine(tags: string[]): string {
-  return tags
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .join(" ");
-}
-
-function loadSavedPlantPosts(): SavedPlantPost[] {
-  try {
-    const raw = localStorage.getItem(SAVED_PLANT_POSTS_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr.filter(isSavedPlantPost);
-  } catch {
-    return [];
-  }
-}
-
 export default function ManualPostPage() {
-  const [topic, setTopic] = useState("Saisonaler Kräutertipp");
-  const [caption, setCaption] = useState(
-    "Heute aus dem Kräutergarten Weinburg: Ein kleiner Kräutertipp für deinen Alltag.",
-  );
-  const [hashtags, setHashtags] = useState(DEFAULT_HASHTAGS);
+  const [input, setInput] = useState("");
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [skipAiImage, setSkipAiImage] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [postBody, setPostBody] = useState("");
   const [copied, setCopied] = useState(false);
-  const [draftRestored, setDraftRestored] = useState(false);
+  const [facebookConnected, setFacebookConnected] = useState<boolean | null>(null);
+  const [postLoading, setPostLoading] = useState(false);
+  const [postOk, setPostOk] = useState(false);
+  const [postError, setPostError] = useState("");
 
-  const [plantName, setPlantName] = useState("");
-  const [generatedText, setGeneratedText] = useState("");
-  const [generateLoading, setGenerateLoading] = useState(false);
-  const [generateError, setGenerateError] = useState("");
-  const [copiedGenerated, setCopiedGenerated] = useState(false);
-  const [copiedGeneratedTags, setCopiedGeneratedTags] = useState(false);
-  const [isTooGeneric, setIsTooGeneric] = useState<boolean | null>(null);
-  const [savedPosts, setSavedPosts] = useState<SavedPlantPost[]>([]);
-  const [generatedHashtags, setGeneratedHashtags] = useState<string[]>([]);
-  const [hashtagVariant, setHashtagVariant] = useState<HashtagVariant>("local");
-  /** Wenn aktiv: erfolgreiche Generierung schreibt in Text- und Hashtag-Felder (Publish Pack). */
-  const [useGenerator, setUseGenerator] = useState(true);
-  const useGeneratorRef = useRef(useGenerator);
-  useGeneratorRef.current = useGenerator;
+  const [scheduleAt, setScheduleAt] = useState("");
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleMsg, setScheduleMsg] = useState("");
+  const [scheduleErr, setScheduleErr] = useState("");
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledRow[]>([]);
+  const [fbNotice, setFbNotice] = useState<string | null>(null);
+  const [fbNoticeTone, setFbNoticeTone] = useState<"ok" | "err">("ok");
 
-  const [postImageSrc, setPostImageSrc] = useState<string | null>(null);
-  const [imagePickError, setImagePickError] = useState("");
-  const [saveError, setSaveError] = useState("");
-  const pendingImageObjectUrlRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingObjectUrlRef = useRef<string | null>(null);
+  const copyTimeoutRef = useRef<number | null>(null);
 
-  function revokePendingImageObjectUrl() {
-    if (pendingImageObjectUrlRef.current) {
-      URL.revokeObjectURL(pendingImageObjectUrlRef.current);
-      pendingImageObjectUrlRef.current = null;
+  const minScheduleValue = useMemo(() => toDatetimeLocalValue(new Date(Date.now() + 120_000)), []);
+
+  const loadScheduled = useCallback(async () => {
+    try {
+      const res = await fetch("/api/scheduled-posts");
+      const data = (await res.json()) as { posts?: ScheduledRow[] };
+      if (res.ok && Array.isArray(data.posts)) setScheduledPosts(data.posts);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  function revokePendingObjectUrl() {
+    if (pendingObjectUrlRef.current) {
+      URL.revokeObjectURL(pendingObjectUrlRef.current);
+      pendingObjectUrlRef.current = null;
     }
   }
 
   useEffect(() => {
-    return () => revokePendingImageObjectUrl();
+    return () => {
+      revokePendingObjectUrl();
+      if (copyTimeoutRef.current) {
+        window.clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
   }, []);
 
-  function clearPostImage() {
-    revokePendingImageObjectUrl();
-    setPostImageSrc(null);
-    setImagePickError("");
+  useEffect(() => {
+    void loadScheduled();
+  }, [loadScheduled]);
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("facebook");
+    if (!q) return;
+    if (q === "connected") {
+      setFbNotice("Facebook ist verbunden.");
+      setFbNoticeTone("ok");
+    } else if (q === "cancelled") {
+      setFbNotice("Abgebrochen.");
+      setFbNoticeTone("err");
+    } else if (q === "state-mismatch" || q === "config-missing") {
+      setFbNotice("Bitte erneut verbinden oder Konfiguration prüfen.");
+      setFbNoticeTone("err");
+    } else {
+      try {
+        setFbNotice(decodeURIComponent(q).slice(0, 240));
+      } catch {
+        setFbNotice(q.slice(0, 240));
+      }
+      setFbNoticeTone("err");
+    }
+    window.history.replaceState({}, "", "/app/posts/manual");
+    void (async () => {
+      try {
+        const res = await fetch("/api/meta/facebook/status");
+        const data = (await res.json()) as { connected?: boolean };
+        if (data.connected) setFacebookConnected(true);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
+
+  function clearImage() {
+    revokePendingObjectUrl();
+    setImageSrc(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  function handlePostImageFile(file: File) {
-    setImagePickError("");
+  function handleFile(file: File) {
+    setError("");
     if (!file.type.startsWith("image/")) {
-      setImagePickError("Bitte eine Bilddatei wählen.");
+      setError("Bitte eine Bilddatei wählen.");
       return;
     }
-    if (file.size > MAX_POST_IMAGE_BYTES) {
-      setImagePickError("Datei zu groß (max. 2 MB).");
-      return;
-    }
-    revokePendingImageObjectUrl();
+    revokePendingObjectUrl();
     const objectUrl = URL.createObjectURL(file);
-    pendingImageObjectUrlRef.current = objectUrl;
-    setPostImageSrc(objectUrl);
+    pendingObjectUrlRef.current = objectUrl;
+    setImageSrc(objectUrl);
 
     const reader = new FileReader();
     reader.onload = () => {
       const r = reader.result;
       if (typeof r !== "string") return;
-      revokePendingImageObjectUrl();
-      setPostImageSrc(r);
+      revokePendingObjectUrl();
+      setImageSrc(r);
     };
     reader.onerror = () => {
-      revokePendingImageObjectUrl();
-      setPostImageSrc(null);
-      setImagePickError("Bild konnte nicht gelesen werden.");
+      revokePendingObjectUrl();
+      setImageSrc(null);
+      setError("Bild konnte nicht gelesen werden.");
     };
     reader.readAsDataURL(file);
   }
 
-  useEffect(() => {
-    setSavedPosts(loadSavedPlantPosts());
-  }, []);
+  const copyPayload = useMemo(() => {
+    const body = postBody.trim();
+    if (!body) return "";
+    return `${body}\n\n${FIXED_COPY_HASHTAGS}`;
+  }, [postBody]);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (!raw) {
-        setDraftRestored(true);
-        return;
-      }
-      const p = JSON.parse(raw) as {
-        topic?: string;
-        caption?: string;
-        hashtags?: string;
-        useGenerator?: boolean;
-      };
-      if (typeof p.topic === "string") setTopic(p.topic);
-      if (typeof p.caption === "string") setCaption(p.caption);
-      if (typeof p.hashtags === "string") setHashtags(p.hashtags);
-      if (typeof p.useGenerator === "boolean") setUseGenerator(p.useGenerator);
-    } catch {
-      // ignore
-    }
-    setDraftRestored(true);
-  }, []);
-
-  useEffect(() => {
-    if (!draftRestored) return;
-    try {
-      localStorage.setItem(
-        DRAFT_KEY,
-        JSON.stringify({ topic, caption, hashtags, useGenerator }),
-      );
-    } catch {
-      // ignore
-    }
-  }, [topic, caption, hashtags, useGenerator, draftRestored]);
-
-  const postText = useMemo(
-    () => [caption.trim(), hashtags.trim()].filter(Boolean).join("\n\n"),
-    [caption, hashtags],
-  );
-
-  async function copyPost() {
-    await navigator.clipboard.writeText(postText);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  }
-
-  const generatedHashtagLine = useMemo(
-    () => generatedHashtags.filter(Boolean).join(" "),
-    [generatedHashtags],
-  );
-
-  async function generatePlantPost() {
-    if (plantName.trim().length < 3) {
-      setGenerateError("Pflanzenname: mindestens 3 Zeichen.");
+  async function createPost() {
+    setError("");
+    if (!imageSrc && input.trim().length === 0) {
+      setError("Bitte Text eingeben oder ein Bild auswählen.");
       return;
     }
-    setGenerateError("");
-    setGenerateLoading(true);
-    setIsTooGeneric(null);
-    setGeneratedHashtags([]);
+    setLoading(true);
     try {
-      const res = await fetch("/api/generate-plant-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          plant: plantName.trim(),
-          hashtagVariant,
-        }),
-      });
+      const fd = new FormData();
+      if (input.trim()) fd.append("text", input.trim());
+      fd.append("skipAiImage", skipAiImage ? "1" : "0");
+
+      if (imageSrc && (imageSrc.startsWith("data:") || imageSrc.startsWith("blob:"))) {
+        const file = await imageSrcToFile(imageSrc);
+        if (file) fd.append("image", file);
+      }
+
+      const res = await fetch("/api/generate-post", { method: "POST", body: fd });
       const data = (await res.json()) as {
         text?: string;
-        hashtags?: string[];
-        isTooGeneric?: boolean;
+        imageBase64?: string;
+        imageMime?: string;
         error?: string;
       };
       if (!res.ok) {
-        setGenerateError(data.error ?? "Generierung fehlgeschlagen");
-        setGeneratedText("");
-        setGeneratedHashtags([]);
-        setIsTooGeneric(null);
+        setError(data.error ?? "Generierung fehlgeschlagen");
         return;
       }
-      if (typeof data.text === "string") setGeneratedText(data.text);
-      const nextTags = Array.isArray(data.hashtags)
-        ? data.hashtags.filter((h) => typeof h === "string")
-        : [];
-      setGeneratedHashtags(nextTags);
-      if (useGeneratorRef.current && typeof data.text === "string") {
-        setCaption(data.text.trim());
-        setHashtags(hashtagsArrayToLine(nextTags));
+      const next = typeof data.text === "string" ? data.text.trim() : "";
+      if (!next) {
+        setError("Keine Antwort vom Modell");
+        return;
+      }
+      setPostBody(next);
+      if (data.imageBase64 && data.imageMime) {
+        setImageSrc(`data:${data.imageMime};base64,${data.imageBase64}`);
       }
     } catch {
-      setGenerateError("Netzwerkfehler");
-      setGeneratedText("");
-      setGeneratedHashtags([]);
-      setIsTooGeneric(null);
+      setError("Netzwerkfehler");
     } finally {
-      setGenerateLoading(false);
-    }
-  }
-
-  function saveGeneratedPost() {
-    setSaveError("");
-    const plant = plantName.trim();
-    const text = generatedText.trim();
-    if (!plant || !text) return;
-    const imageForStore =
-      postImageSrc && postImageSrc.startsWith("data:") ? postImageSrc : undefined;
-    const entry: SavedPlantPost = {
-      plant,
-      text,
-      hashtags: generatedHashtags.length ? [...generatedHashtags] : undefined,
-      image: imageForStore,
-      createdAt: Date.now(),
-    };
-    setSavedPosts((prev) => {
-      const next = [entry, ...prev].slice(0, 50);
-      try {
-        localStorage.setItem(SAVED_PLANT_POSTS_KEY, JSON.stringify(next));
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "QuotaExceededError") {
-          setSaveError(
-            "Speicher voll: gespeicherte Posts oder Bilder reduzieren (kleineres Bild).",
-          );
-        } else {
-          setSaveError("Speichern fehlgeschlagen.");
-        }
-        return prev;
-      }
-      return next;
-    });
-  }
-
-  function deleteSavedPost(createdAt: number) {
-    setSavedPosts((prev) => {
-      const next = prev.filter((p) => p.createdAt !== createdAt);
-      try {
-        localStorage.setItem(SAVED_PLANT_POSTS_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }
-
-  function insertSavedPost(p: SavedPlantPost) {
-    setGeneratedText(p.text);
-    setPlantName(p.plant);
-    const tags = Array.isArray(p.hashtags) ? p.hashtags : [];
-    setGeneratedHashtags(tags);
-    setCaption(p.text.trim());
-    setHashtags(tags.length ? hashtagsArrayToLine(tags) : "");
-    if (p.image) {
-      revokePendingImageObjectUrl();
-      setPostImageSrc(p.image);
-    } else {
-      clearPostImage();
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (generateLoading) return;
-    if (!generatedText.trim()) {
-      setIsTooGeneric(null);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/meta/facebook/status");
+        const data = (await res.json()) as { authenticated?: boolean; connected?: boolean };
+        if (cancelled) return;
+        if (!data.authenticated) {
+          setFacebookConnected(false);
+          return;
+        }
+        setFacebookConnected(Boolean(data.connected));
+      } catch {
+        if (!cancelled) setFacebookConnected(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function postToFacebook() {
+    setPostError("");
+    setPostOk(false);
+    if (!copyPayload) {
+      setPostError("Erst einen Post generieren oder Text schreiben.");
       return;
     }
-    setIsTooGeneric(isTooGenericClient(generatedText));
-  }, [generatedText, generateLoading]);
+    if (!facebookConnected) {
+      setPostError("Facebook unter „Einstellungen“ verbinden.");
+      return;
+    }
+    setPostLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("message", copyPayload);
+      const img = await imageSrcToFile(imageSrc);
+      if (img) fd.append("image", img);
 
-  function fullGeneratedForClipboard(): string {
-    const body = generatedText.trim();
-    if (!generatedHashtagLine) return body;
-    return `${body}\n\n${generatedHashtagLine}`;
+      const res = await fetch("/api/meta/facebook/publish", { method: "POST", body: fd });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setPostError(data.error ?? "Facebook-Post fehlgeschlagen");
+        return;
+      }
+      setPostOk(true);
+      window.setTimeout(() => setPostOk(false), 2500);
+    } catch {
+      setPostError("Netzwerkfehler");
+    } finally {
+      setPostLoading(false);
+    }
   }
 
-  async function copyGenerated() {
-    const payload = fullGeneratedForClipboard();
-    if (!payload) return;
-    await navigator.clipboard.writeText(payload);
-    setCopiedGenerated(true);
-    window.setTimeout(() => setCopiedGenerated(false), 2000);
+  async function saveSchedule() {
+    setScheduleErr("");
+    setScheduleMsg("");
+    if (!copyPayload) {
+      setScheduleErr("Kein Post-Text.");
+      return;
+    }
+    if (!scheduleAt) {
+      setScheduleErr("Datum und Uhrzeit wählen.");
+      return;
+    }
+    if (!facebookConnected) {
+      setScheduleErr("Facebook verbinden, damit ein Seiten-Token gespeichert werden kann.");
+      return;
+    }
+    const when = new Date(scheduleAt);
+    if (Number.isNaN(when.getTime())) {
+      setScheduleErr("Ungültiges Datum.");
+      return;
+    }
+    setScheduleLoading(true);
+    try {
+      const payload: Record<string, string> = {
+        message: copyPayload,
+        scheduledAt: when.toISOString(),
+      };
+      const imgParts = await imageSrcToBase64Parts(imageSrc);
+      if (imgParts) {
+        payload.imageBase64 = imgParts.imageBase64;
+        payload.imageMime = imgParts.imageMime;
+      }
+      const res = await fetch("/api/scheduled-posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setScheduleErr(data.error ?? "Speichern fehlgeschlagen");
+        return;
+      }
+      setScheduleMsg("Geplant gespeichert.");
+      setScheduleAt("");
+      await loadScheduled();
+      window.setTimeout(() => setScheduleMsg(""), 4000);
+    } catch {
+      setScheduleErr("Netzwerkfehler");
+    } finally {
+      setScheduleLoading(false);
+    }
   }
 
-  async function copyGeneratedHashtagsOnly() {
-    if (!generatedHashtagLine) return;
-    await navigator.clipboard.writeText(generatedHashtagLine);
-    setCopiedGeneratedTags(true);
-    window.setTimeout(() => setCopiedGeneratedTags(false), 2000);
+  async function removeScheduled(id: string) {
+    const res = await fetch(`/api/scheduled-posts/${id}`, { method: "DELETE" });
+    if (res.ok) void loadScheduled();
   }
+
+  async function copyPost() {
+    if (!copyPayload) return;
+    await navigator.clipboard.writeText(copyPayload);
+    setCopied(true);
+    if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = window.setTimeout(() => setCopied(false), 2000);
+  }
+
+  const hasPostText = postBody.trim().length > 0;
+
+  const inputField =
+    "w-full rounded-2xl border border-[#c8dccf] bg-white/85 px-4 py-3 text-sm text-[#2c342a] shadow-sm outline-none placeholder:text-[#8a9687] focus:border-[#7b9e86] focus:ring-2 focus:ring-[#7b9e86]/20";
+  const panel =
+    "rounded-[2rem] border border-white/70 bg-white/50 p-6 shadow-[0_20px_50px_-20px_rgba(61,84,62,0.18)] backdrop-blur-xl backdrop-saturate-150 md:p-8";
+  const btnSecondary =
+    "rounded-2xl border border-[#c8dccf] bg-white/75 px-3 py-2 text-xs font-semibold text-[#3d4a3e] shadow-sm transition hover:bg-white disabled:opacity-40";
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-950 text-zinc-50">
-      <header className="border-b border-white/10">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-4">
-          <div className="leading-tight">
-            <div className="text-sm text-zinc-300">Kräuterfee</div>
-            <div className="text-base font-semibold">Post vorbereiten</div>
-          </div>
-          <Link
-            href="/app"
-            className="rounded-xl border border-white/15 px-3 py-2 text-sm font-semibold"
-          >
-            Zurück
-          </Link>
+    <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
+      {fbNotice ? (
+        <div
+          className={`mb-6 rounded-2xl border px-4 py-3 text-sm ${
+            fbNoticeTone === "ok"
+              ? "border-[#7b9e86]/40 bg-[#5a8f6e]/10 text-[#2d4a38]"
+              : "border-red-200/90 bg-red-50/95 text-red-900"
+          }`}
+          role="status"
+        >
+          {fbNotice}
         </div>
-      </header>
+      ) : null}
 
-      <main className="mx-auto grid w-full max-w-5xl flex-1 gap-6 px-4 py-10 md:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <h1 className="text-xl font-semibold tracking-tight">
-            Facebook-Post manuell vorbereiten
+      <div className={`${panel} space-y-6`}>
+        <div>
+          <h1 className="font-[family-name:var(--font-kraeuterfee-accent)] text-2xl font-medium text-[#3d4a3e] md:text-3xl">
+            Neuer Post
           </h1>
-          <p className="mt-2 text-sm text-zinc-300">
-            Bis die Meta API verbunden ist, kannst du hier Beiträge erstellen,
-            kopieren und direkt in Facebook posten.
+          <p className="mt-1 text-sm text-[#5c6658]">Text oder Foto – dann generieren.</p>
+        </div>
+
+        <label className="grid gap-2 text-sm font-medium text-[#3d4a3e]">
+          <span>Idee / Beobachtung</span>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Kurz beschreiben…"
+            rows={5}
+            className={inputField}
+          />
+        </label>
+
+        <div className="grid gap-2 text-sm">
+          <span className="font-medium text-[#3d4a3e]">Bild (optional)</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleFile(f);
+            }}
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleFile(f);
+            }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={loading} onClick={() => fileInputRef.current?.click()} className={btnSecondary}>
+              {imageSrc ? "Neues Bild" : "Bild wählen"}
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => cameraInputRef.current?.click()}
+              className={btnSecondary}
+            >
+              Foto
+            </button>
+            {imageSrc ? (
+              <button type="button" disabled={loading} onClick={clearImage} className={btnSecondary}>
+                Entfernen
+              </button>
+            ) : null}
+          </div>
+          {imageSrc ? (
+            <div className="mt-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={imageSrc}
+                alt=""
+                className="max-h-56 w-full max-w-md rounded-2xl border border-[#c8dccf]/80 object-contain shadow-sm"
+              />
+            </div>
+          ) : null}
+        </div>
+
+        {input.trim() && !imageSrc ? (
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-[#dce8df] bg-white/55 px-4 py-3 text-sm text-[#3d4a3e]">
+            <input
+              type="checkbox"
+              checked={skipAiImage}
+              onChange={(e) => setSkipAiImage(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-[#a8bcaa] text-[#5a8f6e] focus:ring-[#7b9e86]/30"
+            />
+            <span>
+              <span className="font-medium">Kein KI-Bild erzeugen</span>
+              <span className="mt-0.5 block text-xs font-normal leading-relaxed text-[#6b7568]">
+                Nur Text generieren (schneller, keine Bild-API-Kosten).
+              </span>
+            </span>
+          </label>
+        ) : null}
+
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => void createPost()}
+          className="h-12 w-full rounded-2xl bg-[#5a8f6e] text-sm font-semibold text-white shadow-[0_8px_24px_-6px_rgba(90,143,110,0.45)] transition hover:bg-[#4e7f62] disabled:opacity-40"
+        >
+          {loading ? "Bitte warten…" : "Post generieren"}
+        </button>
+        {input.trim() && !imageSrc && !skipAiImage ? (
+          <p className="text-center text-xs leading-relaxed text-[#6b7568]">
+            Ohne Foto wird ein Kräuterfee-Bild passend zum Text erzeugt (Marke + Figur aus{" "}
+            <code className="rounded bg-[#eef4ef] px-1 font-mono text-[11px]">public/kraeuterfee-mascot.png</code>{" "}
+            falls vorhanden — sonst Stil per Text). Dauert etwas länger.
           </p>
+        ) : null}
 
-          <div className="mt-8 rounded-xl border border-emerald-500/25 bg-emerald-950/20 p-5">
-            <h2 className="text-sm font-semibold text-emerald-100/95">
-              Pflanzen-Post generieren
-            </h2>
-            <p className="mt-1 text-xs text-zinc-400">
-              Für die Marke „Wildkräuter Fee“: Pflanze nennen, Post generieren (lokal für Weinburg und
-              Pielachtal, Klartext ohne Emojis im Beitrag).
-            </p>
-            <label className="mt-4 grid gap-2 text-sm">
-              <span className="text-zinc-300">Pflanzenname</span>
+        {error ? (
+          <p className="text-sm text-red-700" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+
+      <div className={`${panel} mt-6 space-y-4`}>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-[#6b7568]">Text</h2>
+        <label className="grid gap-1">
+          <span className="sr-only">Beitrag</span>
+          <textarea
+            value={postBody}
+            onChange={(e) => setPostBody(e.target.value)}
+            placeholder="Generiert oder selbst schreiben…"
+            rows={10}
+            className={inputField}
+          />
+        </label>
+        {hasPostText ? (
+          <p className="text-xs text-[#6b7568]">
+            Hashtags werden angehängt:{" "}
+            <span className="text-[#5a8f6e]">{FIXED_COPY_HASHTAGS}</span>
+          </p>
+        ) : null}
+
+        {!facebookConnected && hasPostText ? (
+          <p className="text-sm text-[#8a6d3d]">
+            Für Facebook:{" "}
+            <Link href="/app/setup" className="font-semibold text-[#6b5b8e] underline underline-offset-2">
+              verbinden
+            </Link>
+            .
+          </p>
+        ) : null}
+
+        {hasPostText ? (
+          <>
+            <div className="grid gap-2 border-t border-[#dce8df] pt-4">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[#6b7568]">Geplant posten</span>
               <input
-                value={plantName}
-                onChange={(e) => setPlantName(e.target.value)}
-                placeholder="z. B. Spitzwegerich"
-                className="h-11 rounded-xl border border-white/10 bg-black/30 px-3 outline-none focus:border-emerald-400/60"
+                type="datetime-local"
+                min={minScheduleValue}
+                value={scheduleAt}
+                onChange={(e) => setScheduleAt(e.target.value)}
+                className={inputField}
               />
-              <p className="text-xs text-zinc-500">Mindestens 3 Zeichen für die Generierung.</p>
-            </label>
-            <div className="mt-3 flex flex-col gap-2">
-              <span className="text-xs text-zinc-400">Hashtag-Fokus (nächste Generierung)</span>
-              <div
-                className="inline-flex w-fit rounded-lg border border-white/10 p-0.5"
-                role="group"
-                aria-label="Hashtag-Fokus"
-              >
-                <button
-                  type="button"
-                  onClick={() => setHashtagVariant("local")}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                    hashtagVariant === "local"
-                      ? "bg-emerald-600/90 text-emerald-950"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  Lokal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setHashtagVariant("general")}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                    hashtagVariant === "general"
-                      ? "bg-emerald-600/90 text-emerald-950"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  Allgemein
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <button
                 type="button"
-                disabled={generateLoading || plantName.trim().length < 3}
-                onClick={() => void generatePlantPost()}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-950 disabled:opacity-40"
+                disabled={scheduleLoading || !facebookConnected || !copyPayload || !scheduleAt}
+                onClick={() => void saveSchedule()}
+                className="h-11 rounded-2xl border border-[#c4b5fd]/60 bg-[#f5f3ff]/90 text-sm font-semibold text-[#5b4d7a] shadow-sm transition hover:bg-[#ede9fe] disabled:opacity-40"
               >
-                {generateLoading ? "Generiere…" : "Post generieren"}
+                {scheduleLoading ? "…" : "Speichern & später posten"}
               </button>
-              <button
-                type="button"
-                disabled={generateLoading || plantName.trim().length < 3}
-                onClick={() => void generatePlantPost()}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold disabled:opacity-40"
-              >
-                Neu generieren
-              </button>
+              {scheduleMsg ? <p className="text-xs text-[#3d6b4d]">{scheduleMsg}</p> : null}
+              {scheduleErr ? (
+                <p className="text-xs text-red-700" role="alert">
+                  {scheduleErr}
+                </p>
+              ) : null}
             </div>
-            {generateLoading ? (
-              <p className="mt-2 text-xs text-zinc-400" aria-live="polite">
-                Text wird erstellt …
-              </p>
-            ) : null}
-            {generateError ? (
-              <p className="mt-2 text-xs text-red-300" role="alert">
-                {generateError}
-              </p>
-            ) : null}
-            {isTooGeneric === true ? (
-              <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                Dieser Text ist noch zu allgemein – bitte erneut generieren.
-              </p>
-            ) : null}
-            <label className="mt-4 grid gap-2 text-sm">
-              <span className="text-zinc-300">Generierter Text</span>
-              <textarea
-                value={generatedText}
-                onChange={(e) => setGeneratedText(e.target.value)}
-                disabled={generateLoading}
-                rows={10}
-                placeholder="Hier erscheint der generierte Post…"
-                className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm leading-relaxed outline-none focus:border-emerald-400/60 disabled:opacity-50"
-              />
-            </label>
 
-            <div className="mt-4 grid gap-2 text-sm">
-              <span className="text-zinc-300">Bild für Facebook (optional)</span>
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={generateLoading}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = "";
-                    if (f) handlePostImageFile(f);
-                  }}
-                  className="max-w-full text-xs text-zinc-300 file:mr-2 file:rounded-lg file:border-0 file:bg-emerald-600 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-emerald-950"
-                />
-                {postImageSrc ? (
+            <button
+              type="button"
+              disabled={loading || postLoading || !facebookConnected}
+              onClick={() => void postToFacebook()}
+              className="h-12 w-full rounded-2xl bg-[#1877F2] text-sm font-semibold text-white shadow-md transition hover:bg-[#166fe5] disabled:opacity-40"
+            >
+              {postLoading ? "…" : postOk ? "Gepostet!" : "Auf Facebook posten"}
+            </button>
+          </>
+        ) : null}
+        {postError ? (
+          <p className="text-sm text-red-700" role="alert">
+            {postError}
+          </p>
+        ) : null}
+
+        <button
+          type="button"
+          disabled={!copyPayload || loading}
+          onClick={() => void copyPost()}
+          className="h-11 w-full rounded-2xl border border-[#c8dccf] bg-white/80 text-sm font-semibold text-[#3d4a3e] transition hover:bg-white disabled:opacity-40"
+        >
+          {copied ? "Kopiert" : "Kopieren"}
+        </button>
+      </div>
+
+      {scheduledPosts.length > 0 ? (
+        <div className={`${panel} mt-6`}>
+          <h2 className="text-sm font-semibold text-[#3d4a3e]">Geplant</h2>
+          <ul className="mt-4 space-y-3">
+            {scheduledPosts.map((p) => (
+              <li
+                key={p.id}
+                className="rounded-2xl border border-[#dce8df] bg-white/60 px-3 py-3 text-xs text-[#4a5548]"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-[#3d4a3e]">
+                    {new Date(p.scheduledAt).toLocaleString("de-AT", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                  </span>
+                  <span
+                    className={
+                      p.status === "PENDING"
+                        ? "text-amber-700"
+                        : p.status === "FAILED"
+                          ? "text-red-700"
+                          : "text-[#6b7568]"
+                    }
+                  >
+                    {p.status === "PENDING" ? "Geplant" : p.status === "FAILED" ? "Fehler" : p.status}
+                  </span>
+                </div>
+                {p.pageName ? <div className="mt-1 text-[#6b7568]">{p.pageName}</div> : null}
+                <p className="mt-2 line-clamp-3 whitespace-pre-wrap">{p.message}</p>
+                {p.lastError ? <p className="mt-2 text-red-700">{p.lastError}</p> : null}
+                {p.status === "PENDING" || p.status === "FAILED" ? (
                   <button
                     type="button"
-                    onClick={clearPostImage}
-                    className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold"
+                    onClick={() => void removeScheduled(p.id)}
+                    className="mt-2 text-[11px] font-semibold text-[#6b5b8e] underline underline-offset-2"
                   >
-                    Bild entfernen
+                    Entfernen
                   </button>
                 ) : null}
-              </div>
-              {imagePickError ? (
-                <p className="text-xs text-red-300" role="alert">
-                  {imagePickError}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="mt-5 rounded-xl border border-white/10 bg-black/25 p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-                Post-Vorschau
-              </h3>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-zinc-100">
-                {generatedText.trim() || (
-                  <span className="text-zinc-500">Noch kein Text – zuerst generieren.</span>
-                )}
-              </p>
-              {postImageSrc ? (
-                <div className="mt-4">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={postImageSrc}
-                    alt=""
-                    className="max-h-56 w-full max-w-md rounded-lg border border-white/10 object-contain"
-                  />
-                </div>
-              ) : null}
-              {generatedHashtagLine ? (
-                <p
-                  className="mt-4 break-words text-xs leading-relaxed text-emerald-200/90"
-                  aria-label="Hashtags in der Vorschau"
-                >
-                  {generatedHashtagLine}
-                </p>
-              ) : null}
-              <p className="mt-3 text-xs text-zinc-500">
-                Text und Hashtags kannst du mit den Buttons kopieren; das Bild lädst du in Facebook
-                separat hoch.
-              </p>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                disabled={!generatedText.trim() || generateLoading}
-                onClick={() => void copyGenerated()}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold disabled:opacity-40"
-              >
-                {copiedGenerated ? "Kopiert" : "Post kopieren"}
-              </button>
-              <button
-                type="button"
-                disabled={!generatedHashtagLine || generateLoading}
-                onClick={() => void copyGeneratedHashtagsOnly()}
-                className="rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold disabled:opacity-40"
-              >
-                {copiedGeneratedTags ? "Kopiert" : "Hashtags kopieren"}
-              </button>
-              <button
-                type="button"
-                disabled={!generatedText.trim() || !plantName.trim() || generateLoading}
-                onClick={saveGeneratedPost}
-                className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm font-semibold text-emerald-100 disabled:opacity-40 sm:col-span-2"
-              >
-                Speichern
-              </button>
-            </div>
-            {saveError ? (
-              <p className="mt-2 text-xs text-red-300" role="alert">
-                {saveError}
-              </p>
-            ) : null}
-
-            <div className="mt-6 border-t border-white/10 pt-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-                Gespeicherte Posts
-              </h3>
-              {savedPosts.length === 0 ? (
-                <p className="mt-2 text-xs text-zinc-500">Noch keine gespeicherten Posts.</p>
-              ) : (
-                <ul className="mt-3 grid gap-2">
-                  {savedPosts.map((p) => (
-                    <li
-                      key={`${p.createdAt}-${p.plant}`}
-                      className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-3 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <div className="flex min-w-0 flex-1 gap-3">
-                        {p.image ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={p.image}
-                            alt=""
-                            className="h-14 w-14 shrink-0 rounded-md border border-white/10 object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed border-white/15 text-[10px] text-zinc-500">
-                            kein Bild
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-semibold text-zinc-100">{p.plant}</div>
-                          <p className="mt-1 break-words text-xs text-zinc-400">
-                            {p.text.length > 100 ? `${p.text.slice(0, 100)}…` : p.text}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col">
-                        <button
-                          type="button"
-                          onClick={() => insertSavedPost(p)}
-                          className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold"
-                        >
-                          Einfügen
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteSavedPost(p.createdAt)}
-                          className="rounded-lg border border-red-500/30 px-3 py-1.5 text-xs font-semibold text-red-200"
-                        >
-                          Löschen
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-6 grid gap-4">
-            <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/20 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className="text-sm font-semibold text-zinc-200">Publish-Entwurf</span>
-                <div
-                  className="inline-flex w-fit rounded-lg border border-white/10 p-0.5"
-                  role="group"
-                  aria-label="Generator für Publish Pack"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setUseGenerator(true)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                      useGenerator
-                        ? "bg-emerald-600/90 text-emerald-950"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    Generator verwenden
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setUseGenerator(false)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                      !useGenerator
-                        ? "bg-emerald-600/90 text-emerald-950"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    Nur manuell
-                  </button>
-                </div>
-              </div>
-              <p className="text-xs leading-relaxed text-zinc-500">
-                {useGenerator
-                  ? "Nach „Post generieren“ werden Text und Hashtags hier und im Publish Pack übernommen. Du kannst alles noch anpassen."
-                  : "Generierung aktualisiert nur den grünen Bereich oben. Publish Pack nutzt ausschließlich die Felder unten."}
-              </p>
-            </div>
-
-            <label className="grid gap-2 text-sm">
-              <span className="text-zinc-300">Thema</span>
-              <input
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                className="h-11 rounded-xl border border-white/10 bg-black/30 px-3 outline-none focus:border-emerald-400/60"
-              />
-            </label>
-
-            <label className="grid gap-2 text-sm">
-              <span className="text-zinc-300">Text</span>
-              <textarea
-                value={caption}
-                onChange={(e) => setCaption(e.target.value)}
-                rows={8}
-                className="rounded-xl border border-white/10 bg-black/30 p-3 outline-none focus:border-emerald-400/60"
-              />
-            </label>
-
-            <label className="grid gap-2 text-sm">
-              <span className="text-zinc-300">Hashtags</span>
-              <textarea
-                value={hashtags}
-                onChange={(e) => setHashtags(e.target.value)}
-                rows={3}
-                className="rounded-xl border border-white/10 bg-black/30 p-3 outline-none focus:border-emerald-400/60"
-              />
-            </label>
-          </div>
-        </section>
-
-        <aside className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <h2 className="text-sm font-semibold text-zinc-200">Publish Pack</h2>
-          <p className="mt-1 text-xs text-zinc-500">
-            Vorschau: Beitragstext, Leerzeile, Hashtags (wie beim Kopieren nach Facebook).
-          </p>
-          <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-4 text-sm leading-6 text-zinc-100 whitespace-pre-wrap">
-            {postText || (
-              <span className="text-zinc-500">Noch kein Text – generieren oder manuell ausfüllen.</span>
-            )}
-          </div>
-          <button
-            onClick={copyPost}
-            className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-950"
-          >
-            {copied ? "Kopiert" : "Publish Pack kopieren"}
-          </button>
-          <a
-            href="https://www.facebook.com/profile.php?id=61560644438066"
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex w-full justify-center rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold"
-          >
-            Facebook Page öffnen
-          </a>
-          <p className="mt-4 text-xs leading-5 text-zinc-400">
-            Entwurf (Thema, Text, Hashtags, Generator-Modus) wird automatisch in diesem Browser
-            gespeichert. Kalender und API-Posting sind die nächsten Ausbaustufen.
-          </p>
-        </aside>
-      </main>
-    </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </main>
   );
 }
-

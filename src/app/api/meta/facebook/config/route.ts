@@ -21,7 +21,10 @@ export async function GET() {
     checklist: [
       "Meta → App einstellen → Basis → App-Domains: nur redirectHostname (ohne https)",
       "Meta → Facebook Login → Einstellungen → Gültige OAuth-Weiterleitungs-URIs: exakt redirectUri",
+      "Meta → Use Case / Anwendungsfall: „Facebook Login“ – hier alle angefragten Berechtigungen (public_profile, pages_*, optional email) aktivieren",
+      "Scope in URLs nur mit Leerzeichen trennen, nicht mit Komma (…&scope=a+b+c)",
       "Nach Änderungen in Meta immer speichern und 1–2 Minuten warten",
     ],
   });
 }
+

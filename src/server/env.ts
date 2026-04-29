@@ -12,8 +12,19 @@ const EnvSchema = z.object({
     z.string().min(1),
   ),
   SESSION_PASSWORD: z.string().min(16),
+  /** Login identifier (e.g. "Martha"). If unset, APP_ADMIN_EMAIL is used. */
+  APP_ADMIN_USERNAME: z.string().min(1).optional(),
   APP_ADMIN_EMAIL: z.string().email(),
-  APP_ADMIN_PASSWORD: z.string().min(8),
+  APP_ADMIN_PASSWORD: z.string().min(1),
+  /** OpenAI API key for /api/generate-plant-post (server only). */
+  OPENAI_API_KEY: z.string().optional(),
+  /**
+   * Optional: Base64 des Kräuterfee-Maskottchens (roh oder data:image/…;base64,…)
+   * für Bildgenerierung mit Referenz, falls keine Datei unter public/ liegt.
+   */
+  KRAEUTERFEE_MASCOT_BASE64: z.string().optional(),
+  /** OpenWeather API key for weather-aware generation (optional). */
+  OPENWEATHER_API_KEY: z.string().optional(),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   /** Trim + ohne Slash am Ende — Meta ist bei OAuth strikt (Redirect muss überall identisch sein). */
@@ -26,8 +37,13 @@ const EnvSchema = z.object({
     },
     z.string().url().optional(),
   ),
-  /** OpenAI API key for /api/generate-plant-post (server only). */
-  OPENAI_API_KEY: z.string().optional(),
+  /** Wenn gesetzt: nur diese Seite ID aus /me/accounts zum Posten (sonst erste Seite). */
+  META_PAGE_ID: z.string().min(1).optional(),
+  /**
+   * Vercel Cron: Authorization Bearer … für GET /api/cron/publish-scheduled
+   * In Vercel Projekt als Umgebungsvariable anlegen.
+   */
+  CRON_SECRET: z.string().min(8).optional(),
 });
 
 export const env = EnvSchema.parse(process.env);

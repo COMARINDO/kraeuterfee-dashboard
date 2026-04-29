@@ -26,11 +26,13 @@ export type AppSession = IronSession<{
 export const sessionOptions: SessionOptions = {
   password: env.SESSION_PASSWORD,
   cookieName: "kraeuterfee_session",
+  /** Session inkl. Facebook-Token mehrere Wochen gültig (Browser kann schließen). */
   cookieOptions: {
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
     sameSite: "lax",
     path: "/",
+    maxAge: 60 * 60 * 24 * 30,
   },
 };
 

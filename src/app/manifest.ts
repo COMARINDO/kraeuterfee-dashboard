@@ -2,13 +2,13 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Kräuterfee Dashboard",
+    name: "Kräuterfee",
     short_name: "Kräuterfee",
-    description: "Instagram & Facebook zentral planen und steuern.",
+    description: "Kräuterfee",
     start_url: "/",
     display: "standalone",
-    background_color: "#0a0a0a",
-    theme_color: "#0a0a0a",
+    background_color: "#fbf9f4",
+    theme_color: "#5a8f6e",
     icons: [
       {
         src: "/icon",
