@@ -73,6 +73,10 @@ RUN cp -a /tmp/prisma-nm/. /app/node_modules/ \
   && chown -R nextjs:nodejs /app/node_modules
 
 USER nextjs
+WORKDIR /app
+# Fail the image build if Prisma CLI resolution breaks (catches missing prisma/config before deploy).
+RUN node -e "require.resolve('prisma/config')" \
+  && node node_modules/prisma/build/index.js --version
 
 EXPOSE 3000
 
