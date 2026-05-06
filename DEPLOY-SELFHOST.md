@@ -380,6 +380,7 @@ Produktives Live-Gehen = bei dir: **Coolify-UI** + **Git Push** + Checks aus Abs
 
 | Symptom | Maßnahme |
 |---------|----------|
+| Container startet nicht, Log `Cannot find module 'dotenv/config'` | Behoben im Dockerfile: `dotenv` wird aus dem Builder nach `node_modules/dotenv` kopiert (standalone-Trace enthält es nicht). Image neu bauen / Redeploy. |
 | Container startet nicht, Log `prisma migrate` Fehler | DB-Pfad prüfen; Volume **gemountet**; Rechte `nextjs` auf `/data` |
 | 502 / kein HTTPS | Domain **nur** in Coolify; keine zweite Traefik-Regel |
 | Login geht, /app 500 | `DATABASE_URL` / Prisma; Logs: `getPrisma` |
