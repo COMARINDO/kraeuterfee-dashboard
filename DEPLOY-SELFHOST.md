@@ -264,7 +264,7 @@ Production-HTTPS dann über Traefik nur, wenn ein **Proxy** den Container im Net
 | Feld | Wert |
 |------|------|
 | **Build-Pack / Quelle** | Dockerfile |
-| **Dockerfile-Pfad** | `Dockerfile` (bei Monorepo: **Base Directory** `kraeuterfee-dashboard`) |
+| **Dockerfile-Pfad** | `Dockerfile` am **Repository-Root** (Repo `COMARINDO/kraeuterfee-dashboard`): **Base Directory / Build Context leer lassen** bzw. `.` — kein Unterordner `kraeuterfee-dashboard` nötig. |
 | **Exposed Port (intern)** | `3000` — **kein** „Publish Port to Host“ |
 | **Netzwerk** | Vorhandenes Docker-Netzwerk **`web`** (Coolify: *Docker Network* / *Connect to predefined network* — Bezeichnung je nach Version) |
 | **Domain(s)** | Nur hier konfigurieren (z. B. `kraeuterfee.example.com`); **HTTPS** über integrierten Traefik/Let’s Encrypt von Coolify |
@@ -401,4 +401,88 @@ Produktives Live-Gehen = bei dir: **Coolify-UI** + **Git Push** + Checks aus Abs
 **Rotation:** `scripts/backup-sqlite.sh` — Umgebungsvariable `ROTATE_KEEP` (Standard **14**), `BACKUP_DIR` für Zielverzeichnis.
 
 **Automatisierung (Host):** täglicher `cron`, der das Skript mit dem **Host-Pfad** zur DB-Datei im Docker-Volume aufruft (Pfad über `docker volume inspect` / Coolify Storage-Pfad ermitteln).
+
+---
+
+## 23. Coolify Go-Live — durchzuführen auf dem Server (Checkliste)
+
+Diese Liste ersetzt **keinen** Zugriff auf deinen VPS: du arbeitest sie in der **Coolify-UI** und auf dem **SSH-Host** ab.
+
+### A) Application anlegen
+
+1. Coolify → **New Resource** → **Application** (o. ä.).
+2. **GitHub** verbinden (falls noch nicht): Organisation/User **COMARINDO**, Repo **kraeuterfee-dashboard**, Branch **main**.
+3. **Build Pack:** **Dockerfile**.
+4. **Base Directory / Root:** **leer** (Repo-Root enthält `Dockerfile`).
+5. **Port:** **3000** (intern). **Kein** „Map to host port“ / „Publish port“ für diese App, wenn Traefik über Coolify routet.
+6. **Docker Network:** vorhandenes Netz **`web`** auswählen (wie Vaultwarden, n8n, …).
+7. **Domains:** gewünschte FQDN eintragen → **HTTPS** / Let’s Encrypt von Coolify aktivieren. **Nicht** dieselbe Host-Regel in `traefik.yml` duplizieren.
+
+### B) Persistenz
+
+1. **Volume / Storage:** persistent, im Container mounten auf **`/data`**.
+2. **Environment (Runtime):** `DATABASE_URL=file:/data/kraeuterfee.db`.
+
+### C) Environment (Minimum + Ollama)
+
+Alle als **Runtime**-Variablen setzen (nicht im Image brennen):
+
+```env
+NODE_ENV=production
+DATABASE_URL=file:/data/kraeuterfee.db
+SESSION_PASSWORD=<min-16-zeichen-stabil>
+APP_ADMIN_EMAIL=<mail>
+APP_ADMIN_PASSWORD=<stark>
+CRON_SECRET=<random-min-8>
+
+OPENAI_BASE_URL=http://ollama:11434/v1
+OPENAI_API_KEY=ollama
+OPENAI_CHAT_MODEL=llama3.2
+OPENAI_IMAGE_GENERATION=auto
+```
+
+Optional: `META_APP_ID`, `META_APP_SECRET`, `META_REDIRECT_URI`, `META_PAGE_ID`, `OPENWEATHER_API_KEY`, …
+
+**Meta:** `META_REDIRECT_URI=https://<deine-domain>/api/meta/facebook/callback` exakt in der Meta-App.
+
+**Node RAM (8 GB Host):** optional in Coolify überschreiben, z. B. `NODE_OPTIONS=--max-old-space-size=384` (Default im Dockerfile).
+
+### D) Ollama
+
+1. Ollama-Container muss im Netz **`web`** erreichbar sein (Service-Name oft `ollama`).
+2. Auf dem Host:  
+   `docker exec -it $(docker ps -qf name=ollama) ollama pull llama3.2`  
+   (Container-Namen anpassen, wenn abweichend.)
+3. Test aus einem Ephemeral-Container im Netz `web`:  
+   `docker run --rm --network web curlimages/curl -sS http://ollama:11434/api/tags`
+
+### E) Deploy & Webhook
+
+1. **Deploy** / **Save** → ersten Build abwarten.
+2. **GitHub Webhook** für das Repo aktivieren (Coolify zeigt URL), damit **Push auf `main`** neu baut.
+
+### F) Validierung (du führst aus)
+
+| Check | Befehl / Aktion |
+|-------|------------------|
+| HTTPS | Browser: `https://<domain>/` |
+| Health | `curl -fsS https://<domain>/api/health` |
+| Login | `/login` |
+| Restart | Coolify **Restart** → Login + Daten noch da |
+| Cron | `curl -fsS -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/publish-scheduled` |
+
+### G) Betrieb: finale Werte (von dir nach Deploy eintragen)
+
+| Name | Wert (Beispiel / nach Deploy ausfüllen) |
+|------|----------------------------------------|
+| Öffentliche Domain | `___________________________` |
+| HTTPS | Let’s Encrypt aktiv (grünes Schloss) |
+| Healthcheck | `GET /api/health` → JSON `status":"ok"` |
+| Container | Coolify: **running**, Docker **healthy** |
+| Volume | Mount **`/data`** → enthält `kraeuterfee.db` |
+| ENV | siehe Block C (keine Secrets im Chat loggen) |
+| GitHub Auto-Deploy | Webhook **aktiv**, Branch **main** |
+| Risiken | SQLite = 1× Instanz; RAM mit Ollama teilen; ohne Backup kein Rollback der DB |
+| Nächste Schritte | Host-Cron für `scripts/backup-sqlite.sh`; Meta Redirect prüfen; geplanten Post-Cron einrichten |
+
 
