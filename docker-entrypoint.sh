@@ -19,7 +19,8 @@ if [ "$db_path" != "$DATABASE_URL" ]; then
 fi
 
 echo "[kraeuterfee] prisma migrate deploy …"
-if ! prisma migrate deploy; then
+# Gleiche CLI wie im prisma-deps-Overlay (kein globales npm install im Image).
+if ! node node_modules/prisma/build/index.js migrate deploy; then
   echo "[kraeuterfee] FATAL: prisma migrate deploy fehlgeschlagen" >&2
   exit 1
 fi

@@ -1,5 +1,4 @@
-// Loads .env for local `prisma migrate` / CLI. In Docker, DATABASE_URL comes from the environment;
-// the dotenv package must still be present in the image (see Dockerfile COPY node_modules/dotenv).
+// DATABASE_URL kommt aus der Umgebung (Docker/Coolify) oder aus .env lokal (dotenv).
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
