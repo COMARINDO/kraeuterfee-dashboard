@@ -6,6 +6,7 @@
     "dev": "next dev",
     "postinstall": "prisma generate",
     "build": "prisma migrate deploy && next build --webpack",
+    "build:docker": "prisma generate && next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
@@ -13,6 +14,7 @@
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.5.0",
     "iron-session": "^8.0.4",
     "next": "16.2.4",
     "next-pwa": "^5.6.0",

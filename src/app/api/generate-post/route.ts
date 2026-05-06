@@ -1,4 +1,4 @@
-import { env } from "@/server/env";
+import { env, useOpenAiImageApi } from "@/server/env";
 import {
   buildKräuterfeeDalleImagePrompt,
   buildKräuterfeeReferenceImagePrompt,
@@ -10,7 +10,18 @@ import { cookies } from "next/headers";
 import OpenAI, { toFile } from "openai";
 import { NextResponse } from "next/server";
 
-const MODEL = "gpt-4o-mini";
+const DEFAULT_CHAT_MODEL = "gpt-4o-mini";
+
+function chatModel(): string {
+  return env.OPENAI_CHAT_MODEL ?? DEFAULT_CHAT_MODEL;
+}
+
+function openaiClient(): OpenAI {
+  return new OpenAI({
+    apiKey: env.OPENAI_API_KEY!,
+    ...(env.OPENAI_BASE_URL ? { baseURL: env.OPENAI_BASE_URL } : {}),
+  });
+}
 
 const SYSTEM_PROMPT = `Du bist ein Social Media Autor für einen Kräutergarten in Weinburg.
 
@@ -64,6 +75,32 @@ Beispiel für die Struktur (Inhalt nur Platzhalter):
 
 Nur diesen fertigen Gesamttext zurückgeben, ohne Erklärungen davor oder danach.`;
 
+const REPLY_SYSTEM_PROMPT = `Du bist die Kräuterfee eines Kräutergartens in Weinburg und antwortest auf einen fremden Social-Media-Beitrag.
+Du sprichst NUR in kurzen Reimzeilen—wie eine kleine frech-liebe Stimme aus dem Krautbeet: herzlich, neugierig, ein winzig bisschen schlimm-gut und verspielt (angelehnt an den Ton von Pumuckl: direkt, warm, nicht brav-gestelzt, nie gemein).
+Der Geist der Pflanzen freut sich über echte Wertschätzung: Natur, Kräuter, Garten, Mühe, Aufmerksamkeit—das soll in den Reimen klingen.
+
+Du lieferst AUSSCHLIESSLICH 2, 3 oder 4 Reimzeilen (siehe Regeln). Kein Prosa-Post, kein Erklärtext.`;
+
+const REPLY_RULES_PROMPT = `Regeln für die Antwort (nur Reime auf Fremd-Post):
+
+- Ausgabe NUR aus gereimten Zeilen: mindestens 2, höchstens 4 Zeilen.
+- Reimschema:
+  • 2 Zeilen: ein Paarreim (Zeile 1 reimt mit Zeile 2).
+  • 4 Zeilen: zwei Paarreime (1↔2 und 3↔4).
+  • 3 Zeilen: Kreuzreim A–B–A (Zeile 1 und 3 reimen sich; Zeile 2 passt inhaltlich und klanglich dazu).
+- Inhalt: Freude über die Wertschätzung im Fremd-Post—dass jemand Natur, Kräuter, Garten oder ähnliche Mühe würdigt; herzlicher Jubel und Dank in den Versen, nicht schleimig, nicht belehrend.
+- Ton: frech-lieb und verspielt wie bei Pumuckl—direkt, warm, neugierig, lebendige Alltagssprache; kein Hochdeutsch-Pathos, kein kitschiges Feen-„ihr“ in jedem Wort.
+- Konkrete kleine Bilder aus dem Garten dürfen rein (Kraut, Beet, Sonne, Regen), aber kurz halten.
+- Keine Emojis. Keine Überschrift. Keine Anführungszeichen um einzelne Zeilen. Kein Fließtext, kein „---“.
+- Den Fremdtext nicht abschreiben; ein Hauch Anknüpfung reicht.
+- Keine erfundenen Fakten über den Autor.
+
+AUSGABE-FORMAT (exakt):
+
+Nur die 2–4 Reimzeilen, nach jeder Zeile ein Zeilenumbruch. Kein Prosa davor oder danach.
+
+Nur diesen Vers-Text zurückgeben, ohne Erklärungen.`;
+
 function guessMimeType(file: File): string {
   const t = (file.type || "").trim();
   if (t.startsWith("image/")) return t;
@@ -91,8 +128,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid multipart/form-data" }, { status: 400 });
   }
 
+  const modeRaw = form.get("mode");
+  const mode = typeof modeRaw === "string" && modeRaw.trim() === "reply" ? "reply" : "own";
+
   const textRaw = form.get("text");
   const text = typeof textRaw === "string" ? textRaw.trim() : "";
+
+  const replyToRaw = form.get("replyTo");
+  const replyTo = typeof replyToRaw === "string" ? replyToRaw.trim() : "";
 
   const image = form.get("image");
   const hasImage = image instanceof File && image.size > 0;
@@ -100,7 +143,17 @@ export async function POST(req: Request) {
   const skipAiImage =
     skipAiImageRaw === "1" || skipAiImageRaw === "true" || skipAiImageRaw === "on";
 
-  if (!hasImage && !text) {
+  if (mode === "reply") {
+    if (hasImage) {
+      return NextResponse.json(
+        { error: "Antwort-Modus: bitte ohne Bild generieren (nur eingefügter Post-Text)." },
+        { status: 400 },
+      );
+    }
+    if (!replyTo) {
+      return NextResponse.json({ error: "Bitte den fremden Post zum Beantworten einfügen." }, { status: 400 });
+    }
+  } else if (!hasImage && !text) {
     return NextResponse.json({ error: "Bitte Text eingeben oder ein Bild hochladen." }, { status: 400 });
   }
 
@@ -112,7 +165,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    const openai = openaiClient();
 
     if (hasImage) {
       const file = image as File;
@@ -122,7 +175,7 @@ export async function POST(req: Request) {
       const dataUrl = toDataUrl(mime, base64);
 
       const completion = await openai.chat.completions.create({
-        model: MODEL,
+        model: chatModel(),
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           {
@@ -144,8 +197,70 @@ export async function POST(req: Request) {
       return NextResponse.json({ text: out });
     }
 
+    if (mode === "reply") {
+      const userParts = [`${REPLY_RULES_PROMPT}\n\nEingefügter Fremd-Post:\n${replyTo}`];
+      if (text) {
+        userParts.push(`\n\nErgänzung von der Gärtnerin/dem Gärtner (optional, beachten):\n${text}`);
+      }
+      const completionReply = await openai.chat.completions.create({
+        model: chatModel(),
+        messages: [
+          { role: "system", content: REPLY_SYSTEM_PROMPT },
+          { role: "user", content: userParts.join("") },
+        ],
+        max_completion_tokens: 640,
+      });
+      const outReply = completionReply.choices?.[0]?.message?.content?.trim() ?? "";
+      if (!outReply) return NextResponse.json({ error: "Keine Antwort vom Modell" }, { status: 500 });
+
+      let imageBase64Reply: string | undefined;
+      if (!skipAiImage && useOpenAiImageApi()) {
+        const snippet = proseForIllustration(outReply);
+        const mascot = await loadKräuterfeeMascot();
+        if (mascot) {
+          try {
+            const mascotFile = await toFile(mascot.buffer, mascot.filename, { type: mascot.mime });
+            const refPrompt = buildKräuterfeeReferenceImagePrompt(snippet);
+            const refRes = await openai.images.edit({
+              model: "gpt-image-1.5",
+              image: mascotFile,
+              prompt: refPrompt,
+              size: "1024x1024",
+              quality: "medium",
+              input_fidelity: "high",
+              output_format: "png",
+            });
+            imageBase64Reply = refRes.data?.[0]?.b64_json ?? undefined;
+          } catch (refErr) {
+            console.error("[generate-post] gpt-image (mascot) reply", refErr);
+          }
+        }
+        if (!imageBase64Reply) {
+          try {
+            const dallePrompt = buildKräuterfeeDalleImagePrompt(snippet);
+            const imgRes = await openai.images.generate({
+              model: "dall-e-3",
+              prompt: dallePrompt,
+              n: 1,
+              size: "1024x1024",
+              response_format: "b64_json",
+              quality: "standard",
+            });
+            imageBase64Reply = imgRes.data?.[0]?.b64_json ?? undefined;
+          } catch (imgErr) {
+            console.error("[generate-post] DALL-E reply", imgErr);
+          }
+        }
+      }
+
+      if (imageBase64Reply) {
+        return NextResponse.json({ text: outReply, imageBase64: imageBase64Reply, imageMime: "image/png" as const });
+      }
+      return NextResponse.json({ text: outReply });
+    }
+
     const completion = await openai.chat.completions.create({
-      model: MODEL,
+      model: chatModel(),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -160,7 +275,7 @@ export async function POST(req: Request) {
     if (!out) return NextResponse.json({ error: "Keine Antwort vom Modell" }, { status: 500 });
 
     let imageBase64: string | undefined;
-    if (!skipAiImage) {
+    if (!skipAiImage && useOpenAiImageApi()) {
       const snippet = proseForIllustration(out);
       const mascot = await loadKräuterfeeMascot();
       if (mascot) {

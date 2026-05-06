@@ -59,6 +59,9 @@ type ScheduledRow = {
 };
 
 export default function ManualPostPage() {
+  const [inputMode, setInputMode] = useState<"own" | "reply">("own");
+  const [replyPasted, setReplyPasted] = useState("");
+  const [replyExtra, setReplyExtra] = useState("");
   const [input, setInput] = useState("");
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [skipAiImage, setSkipAiImage] = useState(false);
@@ -149,6 +152,15 @@ export default function ManualPostPage() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (inputMode !== "reply") return;
+    setSkipAiImage(true);
+    revokePendingObjectUrl();
+    setImageSrc(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+  }, [inputMode]);
+
   function clearImage() {
     revokePendingObjectUrl();
     setImageSrc(null);
@@ -189,19 +201,30 @@ export default function ManualPostPage() {
 
   async function createPost() {
     setError("");
-    if (!imageSrc && input.trim().length === 0) {
+    if (inputMode === "reply") {
+      if (!replyPasted.trim()) {
+        setError("Bitte den fremden Post einfügen, auf den geantwortet werden soll.");
+        return;
+      }
+    } else if (!imageSrc && input.trim().length === 0) {
       setError("Bitte Text eingeben oder ein Bild auswählen.");
       return;
     }
     setLoading(true);
     try {
       const fd = new FormData();
-      if (input.trim()) fd.append("text", input.trim());
       fd.append("skipAiImage", skipAiImage ? "1" : "0");
 
-      if (imageSrc && (imageSrc.startsWith("data:") || imageSrc.startsWith("blob:"))) {
-        const file = await imageSrcToFile(imageSrc);
-        if (file) fd.append("image", file);
+      if (inputMode === "reply") {
+        fd.append("mode", "reply");
+        fd.append("replyTo", replyPasted.trim());
+        if (replyExtra.trim()) fd.append("text", replyExtra.trim());
+      } else {
+        if (input.trim()) fd.append("text", input.trim());
+        if (imageSrc && (imageSrc.startsWith("data:") || imageSrc.startsWith("blob:"))) {
+          const file = await imageSrcToFile(imageSrc);
+          if (file) fd.append("image", file);
+        }
       }
 
       const res = await fetch("/api/generate-post", { method: "POST", body: fd });
@@ -379,20 +402,83 @@ export default function ManualPostPage() {
           <h1 className="font-[family-name:var(--font-kraeuterfee-accent)] text-2xl font-medium text-[#3d4a3e] md:text-3xl">
             Neuer Post
           </h1>
-          <p className="mt-1 text-sm text-[#5c6658]">Text oder Foto – dann generieren.</p>
+          <p className="mt-1 text-sm text-[#5c6658]">
+            {inputMode === "own" ? "Text oder Foto – dann generieren." : "Fremden Post einfügen – die Kräuterfee antwortet in 2–4 Reimzeilen (Freude über Wertschätzung, leicht pumuckl-artig)."}
+          </p>
         </div>
 
-        <label className="grid gap-2 text-sm font-medium text-[#3d4a3e]">
-          <span>Idee / Beobachtung</span>
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Kurz beschreiben…"
-            rows={5}
-            className={inputField}
-          />
-        </label>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-[#5c6658]">Modus</span>
+          <div className="flex gap-2 rounded-2xl border border-[#dce8df] bg-white/60 p-1">
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => setInputMode("own")}
+              className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                inputMode === "own"
+                  ? "bg-[#5a8f6e] text-white shadow-sm"
+                  : "text-[#3d4a3e] hover:bg-white/90"
+              }`}
+            >
+              Eigene Idee
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => setInputMode("reply")}
+              className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                inputMode === "reply"
+                  ? "bg-[#5a8f6e] text-white shadow-sm"
+                  : "text-[#3d4a3e] hover:bg-white/90"
+              }`}
+            >
+              Antwort auf fremden Post
+            </button>
+          </div>
+          {inputMode === "reply" ? (
+            <p className="text-xs leading-relaxed text-[#6b7568]">
+              Es entstehen nur gereimte Zeilen — keine Prosa. Ton: frech-lieb, freudig über Wertschätzung von Natur und Beet.
+            </p>
+          ) : null}
+        </div>
 
+        {inputMode === "own" ? (
+          <label className="grid gap-2 text-sm font-medium text-[#3d4a3e]">
+            <span>Idee / Beobachtung</span>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Kurz beschreiben…"
+              rows={5}
+              className={inputField}
+            />
+          </label>
+        ) : (
+          <>
+            <label className="grid gap-2 text-sm font-medium text-[#3d4a3e]">
+              <span>Fremder Post (hier einfügen)</span>
+              <textarea
+                value={replyPasted}
+                onChange={(e) => setReplyPasted(e.target.value)}
+                placeholder="Kompletten Beitrag von jemand anderem einfügen…"
+                rows={7}
+                className={inputField}
+              />
+            </label>
+            <label className="grid gap-2 text-sm font-medium text-[#3d4a3e]">
+              <span className="font-normal text-[#5c6658]">Ergänzung (optional)</span>
+              <textarea
+                value={replyExtra}
+                onChange={(e) => setReplyExtra(e.target.value)}
+                placeholder="z. B. welcher Ton wichtig ist, oder ein Detail aus dem Garten…"
+                rows={3}
+                className={inputField}
+              />
+            </label>
+          </>
+        )}
+
+        {inputMode === "own" ? (
         <div className="grid gap-2 text-sm">
           <span className="font-medium text-[#3d4a3e]">Bild (optional)</span>
           <input
@@ -445,8 +531,9 @@ export default function ManualPostPage() {
             </div>
           ) : null}
         </div>
+        ) : null}
 
-        {input.trim() && !imageSrc ? (
+        {(inputMode === "reply" || (input.trim() && !imageSrc)) ? (
           <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-[#dce8df] bg-white/55 px-4 py-3 text-sm text-[#3d4a3e]">
             <input
               type="checkbox"
@@ -457,7 +544,9 @@ export default function ManualPostPage() {
             <span>
               <span className="font-medium">Kein KI-Bild erzeugen</span>
               <span className="mt-0.5 block text-xs font-normal leading-relaxed text-[#6b7568]">
-                Nur Text generieren (schneller, keine Bild-API-Kosten).
+                {inputMode === "reply"
+                  ? "Nur Reime erzeugen (kein KI-Bild)—schneller, keine Bild-API-Kosten. Bild zum Posten kannst du unten später anhängen."
+                  : "Nur Text generieren (schneller, keine Bild-API-Kosten)."}
               </span>
             </span>
           </label>
@@ -465,13 +554,17 @@ export default function ManualPostPage() {
 
         <button
           type="button"
-          disabled={loading}
+          disabled={
+            loading ||
+            (inputMode === "own" && !imageSrc && input.trim().length === 0) ||
+            (inputMode === "reply" && !replyPasted.trim())
+          }
           onClick={() => void createPost()}
           className="h-12 w-full rounded-2xl bg-[#5a8f6e] text-sm font-semibold text-white shadow-[0_8px_24px_-6px_rgba(90,143,110,0.45)] transition hover:bg-[#4e7f62] disabled:opacity-40"
         >
-          {loading ? "Bitte warten…" : "Post generieren"}
+          {loading ? "Bitte warten…" : inputMode === "reply" ? "Antwort generieren" : "Post generieren"}
         </button>
-        {input.trim() && !imageSrc && !skipAiImage ? (
+        {inputMode === "own" && input.trim() && !imageSrc && !skipAiImage ? (
           <p className="text-center text-xs leading-relaxed text-[#6b7568]">
             Ohne Foto wird ein Kräuterfee-Bild passend zum Text erzeugt (Marke + Figur aus{" "}
             <code className="rounded bg-[#eef4ef] px-1 font-mono text-[11px]">public/kraeuterfee-mascot.png</code>{" "}

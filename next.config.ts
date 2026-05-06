@@ -10,6 +10,8 @@ const withPWA = withPWAInit({
 });
 
 const nextConfig: NextConfig = {
+  /** Schlanke Docker-/Selfhost-Images (server.js + getrackte deps). */
+  output: process.env.DOCKER_BUILD === "1" ? "standalone" : undefined,
   serverExternalPackages: ["better-sqlite3", "@prisma/client", "@prisma/adapter-better-sqlite3"],
   // next-pwa customizes webpack; we keep Turbopack explicitly configured.
   turbopack: {},

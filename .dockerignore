@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+*.md
+!README.md
+coverage
+.turbo
+.vercel
+*.log
+.DS_Store
+dev.db
+prisma/dev.db
+data
